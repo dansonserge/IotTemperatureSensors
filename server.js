@@ -6,10 +6,15 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+    cors: {
+        origin: "*", // In production this should be restricted
+        methods: ["GET", "POST"]
+    }
+});
 const sc = JSONCodec();
 
-const PORT = 3005;
+const PORT = 4002;
 const NATS_URL = process.env.NATS_URL || 'nats://localhost:4222';
 
 let natsConn;
@@ -51,7 +56,7 @@ setInterval(() => {
     });
 
     io.emit('device_update', devices);
-}, 5000);
+}, 10000); // Throttled to 10s for stability
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -72,6 +77,26 @@ io.on('connection', (socket) => {
 });
 
 initNats().then(() => {
+    // 6. Bridge: Subscribe to processed telemetry from Supply Chain Core and forward to WebSockets
+    if (natsConn) {
+        natsConn.subscribe('iot.broadcast.telemetry', {
+            callback: (err, msg) => {
+                if (err) {
+                    console.error(`❌ Bridge Subscription Error: ${err}`);
+                    return;
+                }
+                try {
+                    const data = sc.decode(msg.data);
+                    console.log(`🔗 Bridging Telemetry: ${data.device_id} -> ${data.temperature}°C`);
+                    io.emit('iot_telemetry', data);
+                } catch (e) {
+                    console.error(`❌ Bridge Decode Error: ${e.message}`);
+                }
+            }
+        });
+        console.log(`📡 Bridge active: Subscribed to iot.broadcast.telemetry`);
+    }
+
     server.listen(PORT, () => {
         console.log(`🚀 IoT Simulator running at http://localhost:${PORT}`);
     });
